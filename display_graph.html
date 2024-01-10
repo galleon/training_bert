@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>D3.js Directed Graph Visualization</title>
+    <style>
+        /* Add your CSS styles here */
+        .link {
+            stroke: #999;
+            stroke-opacity: 0.6;
+        }
+
+        .link-arrow {
+            fill: #999;
+        }
+    </style>
+</head>
+
+<body>
+    <svg width="800" height="600"></svg>
+
+    <script src="https://d3js.org/d3.v5.min.js"></script>
+    <script>
+        d3.json("data/graph_data_g.json").then(function (data) {
+            const svg = d3.select("svg");
+            const width = +svg.attr("width");
+            const height = +svg.attr("height");
+
+            const arrowPadding = 10; // Padding to stop arrows before nodes
+
+            const simulation = d3.forceSimulation(data.nodes)
+                .force("link", d3.forceLink(data.links).id(d => d.id))
+                .force("charge", d3.forceManyBody())
+                .force("center", d3.forceCenter(width / 2, height / 2))
+                .force("x", d3.forceX(width / 2).strength(0.1)) // Attract nodes horizontally
+                .force("y", d3.forceY(height / 2).strength(0.1)); // Attract nodes vertically
+
+            const link = svg.append("g")
+                .selectAll("g")
+                .data(data.links)
+                .enter().append("g");
+
+            link.append("line")
+                .attr("class", "link")
+                .attr("stroke", "#999")
+                .attr("stroke-opacity", 0.6)
+                .attr("stroke-width", d => 2 * Math.sqrt(d.weight))
+                .append("title") // Add a title element for hover text
+                .text(d => `Source: ${d.source.id}, Target: ${d.target.id}`);
+
+            link.append("path")
+                .attr("class", "link-arrow")
+                .attr("d", "M0,-5L10,0L0,5")
+                .attr("fill", "#999");
+
+            const node = svg.append("g")
+                .selectAll("circle")
+                .data(data.nodes)
+                .enter().append("circle")
+                .attr("r", 5)
+                .call(d3.drag()
+                    .on("start", dragstarted)
+                    .on("drag", dragged)
+                    .on("end", dragended));
+
+            node.append("title")
+                .text(d => d.id);
+
+            simulation.on("tick", () => {
+                link.select("line")
+                    .attr("x1", d => d.source.x)
+                    .attr("y1", d => d.source.y)
+                    .attr("x2", d => {
+                        // Calculate the padding positions
+                        const dx = d.target.x - d.source.x;
+                        const dy = d.target.y - d.source.y;
+                        const angle = Math.atan2(dy, dx);
+                        const distance = Math.sqrt(dx * dx + dy * dy);
+                        const paddingX = arrowPadding * (dx / distance);
+                        return d.target.x - paddingX;
+                    })
+                    .attr("y2", d => {
+                        // Calculate the padding positions
+                        const dx = d.target.x - d.source.x;
+                        const dy = d.target.y - d.source.y;
+                        const angle = Math.atan2(dy, dx);
+                        const distance = Math.sqrt(dx * dx + dy * dy);
+                        const paddingY = arrowPadding * (dy / distance);
+                        return d.target.y - paddingY;
+                    });
+
+                link.select("path")
+                    .attr("transform", function (d) {
+                        // Calculate the padding positions
+                        const dx = d.target.x - d.source.x;
+                        const dy = d.target.y - d.source.y;
+                        const angle = Math.atan2(dy, dx);
+                        distance = Math.sqrt(dx * dx + dy * dy);
+                        const targetX = d.target.x - arrowPadding * (dx / distance);
+                        const targetY = d.target.y - arrowPadding * (dy / distance);
+                        return `translate(${targetX},${targetY}) rotate(${angle * (180 / Math.PI)})`;
+                    });
+
+                node
+                    .attr("cx", d => d.x)
+                    .attr("cy", d => d.y);
+            });
+
+            function dragstarted(d) {
+                if (!d3.event.active) simulation.alphaTarget(0.3).restart();
+                d.fx = d.x;
+                d.fy = d.y;
+            }
+
+            function dragged(d) {
+                d.fx = d3.event.x;
+                d.fy = d3.event.y;
+            }
+
+            function dragended(d) {
+                if (!d3.event.active) simulation.alphaTarget(0);
+                d.fx = null;
+                d.fy = null;
+            }
+        });
+    </script>
+</body>
+
+</html>
