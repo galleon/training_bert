@@ -6,13 +6,32 @@
     <title>D3.js Directed Graph Visualization</title>
     <style>
         /* Add your CSS styles here */
-        .link {
-            stroke: #999;
-            stroke-opacity: 0.6;
+        .link-G {
+            stroke: blue;
+            stroke-opacity: 0.8;
+        }
+
+        .link-G_csv {
+            stroke: red;
+            stroke-opacity: 0.8;
+        }
+
+        .link-default {
+            stroke: gray;
+            stroke-opacity: 0.8;
         }
 
         .link-arrow {
             fill: #999;
+        }
+
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: rgba(255, 255, 255, 0.7);
+            padding: 5px;
+            border-radius: 5px;
         }
     </style>
 </head>
@@ -20,17 +39,58 @@
 <body>
     <svg width="800" height="600"></svg>
 
+    <div id="info">
+        Nodes: <span id="nodeCount">0</span>, Edges: <span id="edgeCount">0</span>
+    </div>
+
     <script src="https://d3js.org/d3.v5.min.js"></script>
     <script>
-        d3.json("data/graph_data_g.json").then(function (data) {
+        let currentGraph = "default"; // Current graph type
+        let showEdges1 = true; // Flag to toggle visibility of edges with "1" provenance
+        let showEdges2 = true; // Flag to toggle visibility of edges with "2" provenance
+        let mergedData; // Variable to store the merged data
+
+        // Function to render edges without moving nodes
+        function renderEdges() {
             const svg = d3.select("svg");
+
+            const link = svg.selectAll(".link")
+                .data(mergedData.links)
+                .enter().append("g")
+                .attr("class", "link")
+                .style("display", function (d) {
+                    if (
+                        (currentGraph === "G" && d.provenance !== "G") ||
+                        (currentGraph === "G_csv" && d.provenance !== "G_csv")
+                    ) {
+                        return "none";
+                    }
+                    return "block";
+                });
+
+            link.append("line")
+                .attr("class", d => `link-${d.provenance || currentGraph}`)
+                .attr("stroke-opacity", 0.6)
+                .attr("stroke-width", d => 2 * Math.sqrt(d.weight))
+                .append("title") // Add a title element for hover text
+                .text(d => `Source: ${d.source.id}, Target: ${d.target.id}`);
+
+            // Update the node and edge counts
+            d3.select("#nodeCount").text(mergedData.nodes.length);
+            d3.select("#edgeCount").text(mergedData.links.length);
+        }
+
+        // Function to render a graph with filtered edges
+        function renderGraph() {
+            const svg = d3.select("svg");
+            svg.selectAll("*").remove(); // Clear existing graph
+
             const width = +svg.attr("width");
             const height = +svg.attr("height");
-
             const arrowPadding = 10; // Padding to stop arrows before nodes
 
-            const simulation = d3.forceSimulation(data.nodes)
-                .force("link", d3.forceLink(data.links).id(d => d.id))
+            const simulation = d3.forceSimulation(mergedData.nodes)
+                .force("link", d3.forceLink(mergedData.links).id(d => d.id))
                 .force("charge", d3.forceManyBody())
                 .force("center", d3.forceCenter(width / 2, height / 2))
                 .force("x", d3.forceX(width / 2).strength(0.1)) // Attract nodes horizontally
@@ -38,12 +98,19 @@
 
             const link = svg.append("g")
                 .selectAll("g")
-                .data(data.links)
-                .enter().append("g");
+                .data(mergedData.links)
+                .enter().append("g")
+                .style("display", function (d) {
+                    if (d.provenance === "1" && !showEdges1) {
+                        return "none";
+                    } else if (d.provenance === "2" && !showEdges2) {
+                        return "none";
+                    }
+                    return "block";
+                });
 
             link.append("line")
-                .attr("class", "link")
-                .attr("stroke", "#999")
+                .attr("class", d => `link-${d.provenance || currentGraph}`)
                 .attr("stroke-opacity", 0.6)
                 .attr("stroke-width", d => 2 * Math.sqrt(d.weight))
                 .append("title") // Add a title element for hover text
@@ -56,7 +123,7 @@
 
             const node = svg.append("g")
                 .selectAll("circle")
-                .data(data.nodes)
+                .data(mergedData.nodes)
                 .enter().append("circle")
                 .attr("r", 5)
                 .call(d3.drag()
@@ -96,7 +163,7 @@
                         const dx = d.target.x - d.source.x;
                         const dy = d.target.y - d.source.y;
                         const angle = Math.atan2(dy, dx);
-                        distance = Math.sqrt(dx * dx + dy * dy);
+                        const distance = Math.sqrt(dx * dx + dy * dy);
                         const targetX = d.target.x - arrowPadding * (dx / distance);
                         const targetY = d.target.y - arrowPadding * (dy / distance);
                         return `translate(${targetX},${targetY}) rotate(${angle * (180 / Math.PI)})`;
@@ -123,7 +190,67 @@
                 d.fx = null;
                 d.fy = null;
             }
+        }
+
+        // Function to merge two graphs
+        function mergeGraphs(graph1, graph2) {
+            const mergedNodes = graph1.nodes.concat(graph2.nodes);
+            const mergedLinks = graph1.links.concat(graph2.links);
+            return {
+                nodes: mergedNodes,
+                links: mergedLinks
+            };
+        }
+
+        // Add event listeners for keydown events
+        window.addEventListener("keydown", function (event) {
+            if (event.key === "1") {
+                showEdges1 = !showEdges1; // Toggle visibility of edges with "G" provenance
+                renderEdges();
+            } else if (event.key === "2") {
+                showEdges2 = !showEdges2; // Toggle visibility of edges with "G_csv" provenance
+                renderEdges();
+            }
         });
+
+        // Function to load JSON data with error handling
+        function loadJSON(url, successCallback, errorCallback) {
+            fetch(url)
+                .then(response => response.json())
+                .then(data => successCallback(data))
+                .catch(error => errorCallback(error));
+        }
+
+        // Load and merge JSON data with error handling
+        function loadAndMergeJSON(url1, url2) {
+            loadJSON(url1, function (data1) {
+                loadJSON(url2, function (data2) {
+                    // Merge the two graphs
+                    mergedData = mergeGraphs(data1, data2);
+                    // Render the merged graph with the currentGraph type as filter
+                    renderGraph();
+                }, function (error) {
+                    console.error("Error loading JSON data from URL2:", error);
+                    // Render an empty graph if loading from URL2 fails
+                    renderGraph();
+                });
+            }, function (error) {
+                console.error("Error loading JSON data from URL1:", error);
+                // Load and render an empty graph if loading from URL1 fails
+                loadJSON(url2, function (data2) {
+                    mergedData = data2; // Use data2 if data1 loading fails
+                    renderGraph();
+                }, function (error) {
+                    console.error("Error loading JSON data from URL2:", error);
+                    // Render a completely empty graph if both URLs fail
+                    mergedData = { nodes: [], links: [] };
+                    renderGraph();
+                });
+            });
+        }
+
+        // Initial load of data with the default filter
+        loadAndMergeJSON("data/graph_data_1.json", "data/graph_data_2.json");
     </script>
 </body>
 
