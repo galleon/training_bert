@@ -161,7 +161,7 @@ graph_data = {
             "source": int(source),
             "target": int(target),
             "weight": int(G[source][target].get("weight", 1)),
-            "provenannce": "G",
+            "provenannce": 1,
         }
         for source, target in G.edges()
     ],
@@ -191,7 +191,7 @@ def check_data_types(data):
 # Call the function to check data types in 'graph_data'
 check_data_types(graph_data)
 
-with open("data/graph_data_g.json", "w") as json_file:
+with open("data/graph_data_1.json", "w") as json_file:
     json.dump(graph_data, json_file)
 
 
@@ -248,12 +248,12 @@ graph_data = {
             "source": int(source),
             "target": int(target),
             "weight": int(G_csv[source][target].get("weight", 1)),
-            "provenannce": "G_csv",
+            "provenannce": 2,
         }
         for source, target in G_csv.edges()
     ],
 }
 
 # Export the graph to JSON including edge weights
-with open("data/graph_data_g_csv.json", "w") as json_file:
+with open("data/graph_data_2.json", "w") as json_file:
     json.dump(graph_data, json_file)
