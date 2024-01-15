@@ -65,6 +65,43 @@ class JoliRag:
         )
         return results
 
+    def report_metrics(self, similarity_file=None):
+        assert (
+            self.collection.count() > 0
+        ), "Index is empty. Please index some documents first."
+        assert similarity_file, "Similarity file is required for reporting metrics"
+
+        df = pd.read_csv(similarity_file)
+        df.dropna(inplace=True)
+        source_similarity_mapping = (
+            df.groupby("SourceSessionId")["SimilaritySessionId"].apply(list).to_dict()
+        )
+
+        df_dict = {}
+        df_dict["id"] = []
+        for _top_k in [None, 10, 50, 1000]:
+            df_dict[f"top_{_top_k}"] = []
+            for k, v in source_similarity_mapping.items():
+                output = self.collection.get([str(k)], include=["embeddings"])
+
+                if len(output["embeddings"]) > 0:
+                    if k not in df_dict["id"]:
+                        df_dict["id"].append(k)
+
+                    if not _top_k:
+                        top_k = len(v)
+                    else:
+                        top_k = _top_k
+
+                    results = self.collection.query(
+                        query_embeddings=output["embeddings"], n_results=top_k
+                    )
+
+                    retrieved = set(results["ids"][-1]) & set([str(x) for x in v])
+                    df_dict[f"top_{_top_k}"].append(len(retrieved) / len(v))
+        df = pd.DataFrame(df_dict)
+        df.to_csv(f"ioga_metrics.csv", index=False)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Text Embedding and Retrieval System")
@@ -110,6 +147,8 @@ def main():
             results = jr.search(args.query, args.top_k)
             print(f"Search time: {time() - t1}")
             print(results)
+        elif args.query_file:
+            jr.report_metrics(args.query_file)
 
 
 if __name__ == "__main__":
