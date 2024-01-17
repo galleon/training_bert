@@ -1,56 +1,128 @@
-import sys
 import argparse
-import pandas as pd
-from chromadb.utils import embedding_functions
-from datasets import Dataset
-import chromadb
-import torch
-import csv
-from tqdm.auto import tqdm
+import os
 from time import time
 
+import chromadb
+import pandas as pd
+import torch
+from datasets import Dataset
+from llama_index import ServiceContext, VectorStoreIndex
+from llama_index.embeddings import HuggingFaceEmbedding
+from llama_index.retrievers import BM25Retriever, QueryFusionRetriever
+from llama_index.schema import TextNode
+from llama_index.storage.docstore import SimpleDocumentStore
+from llama_index.storage.storage_context import StorageContext, DEFAULT_PERSIST_DIR
+from llama_index.vector_stores import ChromaVectorStore
+from tqdm.auto import tqdm
 
-class JoliRag:
-    def __init__(self, model_name=None):
-        self.device = (
+
+# class HybridRetriever(BaseRetriever):
+#     def __init__(self, vector_retriever, bm25_retriever):
+#         self.vector_retriever = vector_retriever
+#         self.bm25_retriever = bm25_retriever
+#         super().__init__()
+
+#     def _retrieve(self, query, **kwargs):
+#         bm25_nodes = self.bm25_retriever.retrieve(query, **kwargs)
+#         vector_nodes = self.vector_retriever.retrieve(query, **kwargs)
+
+#         # combine the two lists of nodes
+#         all_nodes = []
+#         node_ids = set()
+#         for n in bm25_nodes + vector_nodes:
+#             if n.node.node_id not in node_ids:
+#                 all_nodes.append(n)
+#                 node_ids.add(n.node.node_id)
+#         return all_nodes
+
+
+class ContentIndexerRetriever:
+    def __init__(
+        self, model_name=None, embed_batch_size=10, persist_dir=DEFAULT_PERSIST_DIR
+    ):
+        device = (
             "cuda"
             if torch.cuda.is_available()
             else "mps"
             if torch.backends.mps.is_available()
             else "cpu"
         )
-        client = chromadb.PersistentClient(path="./db")
-        ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=model_name
-        )
-        self.collection = client.get_or_create_collection(
-            "ioga_collection", embedding_function=ef, metadata={"hnsw:space": "cosine"}
+
+        self._persist_dir = persist_dir
+
+        # Create a service context with a HuggingFaceEmbedding
+
+        embed_model = HuggingFaceEmbedding(
+            model_name=model_name, embed_batch_size=embed_batch_size, device=device
         )
 
-        count = self.collection.count()
-        print(f"Index contains {count} documents")
+        self._service_context = ServiceContext.from_defaults(
+            embed_model=embed_model, llm=None
+        )
 
-    def create_index(self, file_path):
-        df = pd.read_csv(file_path)
+        # Create a ChromaDB vector store
+
+        client = chromadb.PersistentClient(path=persist_dir)
+
+        chroma_collection = client.get_or_create_collection(
+            f"ioga_collection_{model_name.replace('/', '_')}"
+        )
+
+        vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+
+        # Create a simple document store
+
+        try:
+            docstore = SimpleDocumentStore.from_persist_dir(persist_dir=persist_dir)
+            print("Loaded existing docstore")
+        except FileNotFoundError:
+            docstore = SimpleDocumentStore()
+            print("Created new docstore")
+
+        # Create a storage context
+
+        self._storage_context = StorageContext.from_defaults(
+            docstore=docstore, vector_store=vector_store
+        )
+
+        # Load the index from storage
+
+        if os.path.isfile(persist_dir + "/index_store.json"):
+            self._index = VectorStoreIndex.from_vector_store(
+                vector_store=vector_store, service_context=self._service_context
+            )
+
+    def index_utterances_from_csv(self, filename):
+        df = pd.read_csv(filename)
         df.dropna(inplace=True)
         df["id"] = df["id"].astype(str)
 
         data = Dataset.from_pandas(df)
 
-        batch_size = 100  # number of embeddings to be generated simultaneously
-
-        for i in tqdm(range(0, len(data), batch_size)):
-            # find end of batch
-            i_end = min(len(data), i + batch_size)
-            # create batch
-            batch = data[i:i_end]
-            # embeds = self.ef(batch["text"])
-            # upsert to ChromaDb
-            self.collection.add(
-                ids=batch["id"],
-                metadatas=None,
-                documents=batch["text"],
+        nodes = []
+        for i in tqdm(range(0, len(data))):
+            node = TextNode(
+                text=data[i]["text"],
+                id_=data[i]["id"],
+                extra_info={"session_id": data[i]["id"]},
             )
+            nodes.append(node)
+
+        self._storage_context.docstore.add_documents(nodes)
+        self._storage_context.docstore.persist()
+
+        # self.vector_index = VectorStoreIndex.from_documents(documents, service_context=self._service_context, show_progress=True)
+        t1 = time()
+        self._index = VectorStoreIndex(
+            nodes=nodes,
+            storage_context=self._storage_context,
+            service_context=self._service_context,
+            show_progress=True,
+        )
+
+        self._index.storage_context.persist(persist_dir=self._persist_dir)
+
+        print(f"Indexing time: {time() - t1:.2f} seconds")
 
     def search(self, query, top_k=10):
         assert (
@@ -67,9 +139,11 @@ class JoliRag:
 
     def report_metrics(self, similarity_file=None):
         assert (
-            self.collection.count() > 0
+            self._storage_context.vector_store.client.count() > 0
         ), "Index is empty. Please index some documents first."
         assert similarity_file, "Similarity file is required for reporting metrics"
+
+        print("report_metrics")
 
         df = pd.read_csv(similarity_file)
         df.dropna(inplace=True)
@@ -79,28 +153,41 @@ class JoliRag:
 
         df_dict = {}
         df_dict["id"] = []
-        for _top_k in [None, 10, 50, 1000]:
+        for _top_k in [2, 10]:
             df_dict[f"top_{_top_k}"] = []
-            for k, v in source_similarity_mapping.items():
-                output = self.collection.get([str(k)], include=["embeddings"])
 
-                if len(output["embeddings"]) > 0:
+            vector_retriever = self._index.as_retriever(similarity_top_k=_top_k)
+
+            t1 = time()
+            bm25_retriever = BM25Retriever.from_defaults(
+                docstore=self._storage_context.docstore, similarity_top_k=_top_k
+            )
+            print(f"BM25Retriever creation time: {time() - t1:.2f} seconds")
+
+            for k, v in source_similarity_mapping.items():
+                try:
+                    query_text = self._storage_context.docstore.get_document(
+                        str(k)
+                    ).text
+                    print(f"{k}: {len(query_text)} - {query_text}")
+
+                    # will retrieve context from specific companies
+                    nodes = bm25_retriever.retrieve(query_text)
+                    set1 = set([node.node_id for node in nodes])
+
+                    nodes = vector_retriever.retrieve(query_text)
+                    set2 = set([node.node_id for node in nodes])
+
+                    print(f"Overlap: {len(set1 & set2)/len(set1 | set2):.2%}")
+
                     if k not in df_dict["id"]:
                         df_dict["id"].append(k)
 
-                    if not _top_k:
-                        top_k = len(v)
-                    else:
-                        top_k = _top_k
-
-                    results = self.collection.query(
-                        query_embeddings=output["embeddings"], n_results=top_k
-                    )
-
-                    retrieved = set(results["ids"][-1]) & set([str(x) for x in v])
+                    retrieved = (set1 | set2) & set([str(x) for x in v])
                     df_dict[f"top_{_top_k}"].append(len(retrieved) / len(v))
-        df = pd.DataFrame(df_dict)
-        df.to_csv(f"ioga_metrics.csv", index=False)
+                except Exception as _:
+                    continue
+        return df_dict
 
 
 def main():
@@ -114,7 +201,7 @@ def main():
     parser.add_argument(
         "--model_name",
         type=str,
-        default="all-MiniLM-L6-v2",
+        default="intfloat/multilingual-e5-small",  # "sentence-transformers/all-MiniLM-L6-v2"
         help="Name of the pre-trained model to use for embedding",
     )
     parser.add_argument(
@@ -135,20 +222,22 @@ def main():
 
     args = parser.parse_args()
 
-    jr = JoliRag(model_name=args.model_name)
+    cir = ContentIndexerRetriever(model_name=args.model_name)
 
     if args.mode == "index":
         if not args.file:
             raise ValueError("Input CSV file path is required for indexing mode")
-        jr.create_index(args.file)
+        cir.index_utterances_from_csv(args.file)
     elif args.mode == "retrieve":
         if args.query:
             t1 = time()
-            results = jr.search(args.query, args.top_k)
+            results = cir.search(args.query, args.top_k)
             print(f"Search time: {time() - t1}")
             print(results)
         elif args.query_file:
-            jr.report_metrics(args.query_file)
+            df_dict = cir.report_metrics(args.query_file)
+            df = pd.DataFrame(df_dict)
+            df.to_csv("ioga_metrics.csv", index=False)
 
 
 if __name__ == "__main__":
